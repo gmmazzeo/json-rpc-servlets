@@ -13,7 +13,6 @@
  See the License for the specific language governing permissions and
  limitations under the License.
  */
-
 package it.zenitlab.jsonrpc.servlet;
 
 import it.zenitlab.jsonrpc.commons.JsonRpcException;
@@ -54,7 +53,6 @@ public class JsonRpcServlet extends HttpServlet {
     private DBConnectionMonitor dbConnectionMonitor;
     private LogAppendersProvider logAppenderProvider;
     private int parametersMaxLogLength;
-    private String callback;
 
     /**
      * Processes requests for both HTTP <code>GET</code> and <code>POST</code>
@@ -68,6 +66,10 @@ public class JsonRpcServlet extends HttpServlet {
     protected void processRequest(HttpServletRequest request, HttpServletResponse response)
             throws ServletException, IOException {
 
+        response.setHeader("Access-Control-Allow-Origin", "*");
+        response.setHeader("Access-Control-Allow-Headers", "origin, x-requested-with, content-type");
+        response.setHeader("Access-Control-Allow-Methods", "GET, POST");
+
         String qs = request.getQueryString();
 
         if (qs != null && qs.toLowerCase().equals(serviceListKeyword.toLowerCase())) {
@@ -75,12 +77,15 @@ public class JsonRpcServlet extends HttpServlet {
             return;
         }
 
-        if (qs != null && qs.toLowerCase().equals("rpcdelegate")) {
-            writeRpcDelegate(response);
+        if (qs != null && (qs.toLowerCase().equals("javaclient") || qs.toLowerCase().equals("rpcdelegate"))) {
+            writeJavaClient(response);
             return;
         }
 
-        callback = request.getHeader("callback");
+        if (qs != null && (qs.toLowerCase().equals("javascriptclient") || qs.toLowerCase().equals("jsclient"))) {
+            writeJSClient(response, request.getServletPath().replace("/", "_"));
+            return;
+        }
 
         JsonRpcRequestJson jsonRequest = parseRequest(request, response);
         if (jsonRequest == null) {
@@ -121,7 +126,7 @@ public class JsonRpcServlet extends HttpServlet {
             return;
         }
 
-        if (ws.getRolesAllowed()!= null && !ws.getRolesAllowed().isEmpty()) { //devo controllare se l'utente è abilitato ad invocare il metodo
+        if (ws.getRolesAllowed() != null && !ws.getRolesAllowed().isEmpty()) { //devo controllare se l'utente è abilitato ad invocare il metodo
             if (is == null || !ws.isRoleAllowed(is.getRoles())) {
                 writeAuthorizationError(response);
                 return;
@@ -198,7 +203,7 @@ public class JsonRpcServlet extends HttpServlet {
             try {
                 jsonResponse = (JsonRpcResponse) (ws.getReflectedMethod().invoke(serviceInstance, oParams));
             } catch (Exception e) {
-                logger.error("Errore interno", e);
+                logger.error("Internal error", e);
                 writeError(response, jsonRequest.getId(), JsonRpcError.INTERNAL_ERROR, e.getCause().getMessage(), null);
                 return;
             } finally {
@@ -237,14 +242,8 @@ public class JsonRpcServlet extends HttpServlet {
         response.setContentType("application/json;charset=UTF-8");
         PrintWriter out = response.getWriter();
         try {
-            if (callback != null) {
-                out.print(callback + "(");
-            }
             String res = gson.toJson(jsonResponse);
             out.print(res);
-            if (callback != null) {
-                out.print(")");
-            }
             out.println();
             //logger.debug(res);
         } finally {
@@ -287,7 +286,7 @@ public class JsonRpcServlet extends HttpServlet {
         }
     }
 
-    private void writeRpcDelegate(HttpServletResponse response) throws IOException {
+    private void writeJavaClient(HttpServletResponse response) throws IOException {
         response.setContentType("text/plain;charset=UTF-8");
         PrintWriter out = response.getWriter();
         String tab = "   ";
@@ -307,10 +306,10 @@ public class JsonRpcServlet extends HttpServlet {
                 out.print(tab + "public " + (wsd.getReturnType() == null ? "void" : wsd.getReturnType().toString().replace("class ", "").replace("java.lang.", "")));
                 out.print(" " + wsd.getMethodName() + "(");
                 if (wsd.getParameterNames().size() > 0) {
-                    out.print(wsd.getParameterTypes().get(0).toString().replace("class ", "").replace("java.lang.", "")+" "+wsd.getParameterNames().get(0));
+                    out.print(wsd.getParameterTypes().get(0).toString().replace("class ", "").replace("java.lang.", "") + " " + wsd.getParameterNames().get(0));
                 }
                 for (int i = 1; i < wsd.getParameterNames().size(); i++) {
-                    out.print(", " + wsd.getParameterTypes().get(i).toString().replace("class ", "").replace("java.lang.", "")+" "+wsd.getParameterNames().get(i));
+                    out.print(", " + wsd.getParameterTypes().get(i).toString().replace("class ", "").replace("java.lang.", "") + " " + wsd.getParameterNames().get(i));
                 }
                 out.println(") throws it.zenitlab.jsonrpc.commons.JsonRpcException {");
                 if (wsd.getReturnType().toString().contains("<")) {
@@ -326,6 +325,56 @@ public class JsonRpcServlet extends HttpServlet {
                 out.println(tab + "}");
             }
             out.print("}");
+        } finally {
+            out.close();
+        }
+    }
+
+    private void writeJSClient(HttpServletResponse response, String urlPath) throws IOException {
+        response.setContentType("text/plain;charset=UTF-8");
+        PrintWriter out = response.getWriter();
+        String tab = "   ";
+        String urlVariableName = "service" + urlPath + "_url";
+        out.println("<script src=\"https://ajax.googleapis.com/ajax/libs/jquery/2.2.2/jquery.min.js\"></script>");
+        out.println();
+        out.println("<script>");
+        out.println("var " + urlVariableName + " = \"PUT THE URL HERE\";");
+        out.println();
+        try {
+            for (JsonRpcWsDescriptor wsd : wsDescriptor) {
+                out.println("/**\n" + " * " + wsd.getDescription() + "\n**/");
+                out.print("function");
+                out.print(" " + wsd.getMethodName() + "(");
+                if (wsd.getParameterNames().size() > 0) {
+                    out.print(wsd.getParameterNames().get(0));
+                }
+                for (int i = 1; i < wsd.getParameterNames().size(); i++) {
+                    out.print(", " + wsd.getParameterNames().get(i));
+                }
+                out.println(") {");
+                out.println(tab + "var id=Math.random().toString();");
+                out.print(tab + "var request={\"jsonrpc\":\"2.0\", \"id\":id, \"method\":\"" + wsd.getMethodName() + "\", \"params\":[");
+                if (wsd.getParameterNames().size() > 0) {
+                    out.print(wsd.getParameterNames().get(0));
+                }
+                for (int i = 1; i < wsd.getParameterNames().size(); i++) {
+                    out.print(", " + wsd.getParameterNames().get(i));
+                }
+                out.println("]};");
+                out.println(tab + "$.ajax({");
+                out.println(tab + tab + "type: \"POST\",");
+                out.println(tab + tab + "url: " + urlVariableName + ",");
+                out.println(tab + tab + "data: JSON.stringify(request),");
+                out.println(tab + tab + "success: function(data){");
+                out.println(tab + tab + tab + "//write your code here");
+                out.println(tab + tab + "},");
+                out.println(tab + tab + "error: function(XMLHttpRequest, textStatus, errorThrown){");
+                out.println(tab + tab + tab + "//write your code here");
+                out.println(tab + tab + "}");
+                out.println(tab + "});");
+                out.println("}\n");
+            }
+            out.println("</script>");
         } finally {
             out.close();
         }
